@@ -1,0 +1,75 @@
+name: Dependabot Auto-Merge
+
+# Reusable: callers keep a stub that triggers on pull_request_target and calls
+# this with `secrets: inherit`. See README.md.
+#
+# The called workflow sees the caller's event context, so github.event.pull_request
+# refers to the caller repo's PR.
+on:
+  workflow_call:
+    inputs:
+      merge-method:
+        description: "Merge method passed to `gh pr merge` (merge, squash, rebase)."
+        type: string
+        required: false
+        default: merge
+    secrets:
+      BOT_APP_ID:
+        description: "App ID of the caller repo's <repo>-steward GitHub App."
+        required: true
+      BOT_PRIVATE_KEY:
+        description: "Private key of that App. Needs Contents, Pull requests, and Workflows write."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    # GITHUB_TOKEN only reads PR metadata here; the merge and approve steps act
+    # as the caller repo's GitHub App instead (see the token step below).
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          skip-commit-verification: true
+
+      # Most Dependabot PRs edit .github/workflows/*, and GitHub refuses to enable
+      # auto-merge on those without the `workflow` permission — which GITHUB_TOKEN
+      # cannot be granted through a workflow's permissions: block. A GitHub App
+      # installation token can hold it, and expires with the job, so there is no
+      # PAT to rotate. An App token also triggers workflow runs on the resulting
+      # merge commit, which GITHUB_TOKEN does not.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - name: Auto-merge minor and patch updates
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --"$MERGE_METHOD" "$PR_URL"
+        env:
+          MERGE_METHOD: ${{ inputs.merge-method }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Approve PR
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
