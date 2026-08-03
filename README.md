@@ -66,6 +66,21 @@ Registration tooling lives in the `git-repositories` infra repo
 
 ## Versioning
 
-`v1` is a moving tag. Consumers pinning `@v1` pick up changes when it moves, so
-move it only for backward-compatible changes; cut `v2` for anything that alters
-the calling contract (new required secret, changed input semantics).
+Two kinds of tag, following the `actions/*` convention:
+
+- **`v1`** moves. It is only ever moved for backward-compatible changes — a new
+  optional input, a bug fix, a clearer log line. Cut `v2` for anything that
+  alters the calling contract (new required secret, changed input semantics,
+  a default that behaves differently).
+- **`v1.<minor>.<patch>`** is immutable, cut alongside each move of `v1`.
+
+Which one to pin depends on what a repo wants:
+
+| Pin | Behavior |
+|---|---|
+| `@v1` | Picks up compatible changes automatically. Fine for repos that want fixes without tending pins. |
+| `@v1.1.0` | Frozen. Nothing changes until the repo bumps it deliberately. |
+
+Both are tags in a repo you control, so neither is a supply-chain hazard the way
+a third-party moving tag would be — the choice is about how much automatic
+change a consumer wants, not about trust.
