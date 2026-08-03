@@ -27,6 +27,20 @@ jobs:
     secrets: inherit
 ```
 
+By default every ecosystem is in scope. A repo that wants auto-merge for its
+Actions bumps but hand review for its language dependencies sets `ecosystems`:
+
+```yaml
+jobs:
+  automerge:
+    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v1
+    with:
+      ecosystems: github_actions
+    secrets: inherit
+```
+
+A PR outside the allowlist logs why it was skipped and the run ends green.
+
 ### Requirements
 
 The calling repo needs a GitHub App — named `<repo>-steward` by convention — with
@@ -48,6 +62,7 @@ Registration tooling lives in the `git-repositories` infra repo
 | Input | Default | Notes |
 |---|---|---|
 | `merge-method` | `merge` | Passed to `gh pr merge`. Repos here use merge commits. |
+| `ecosystems` | *(empty — all)* | Comma-separated allowlist of Dependabot package ecosystems, no spaces (e.g. `github_actions,cargo`). |
 
 ## Versioning
 
