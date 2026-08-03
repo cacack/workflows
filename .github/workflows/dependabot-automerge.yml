@@ -20,6 +20,36 @@ on:
         type: string
         required: false
         default: ""
+      # This job's egress is small and knowable, and it is the most
+      # supply-chain-sensitive one in the set — an App token with Contents,
+      # Pull requests, and Workflows write, on pull_request_target. So it
+      # blocks by default rather than deferring to a permanent audit. The
+      # inputs exist because a caller cannot re-harden a called workflow's
+      # steps from its stub; without them, an unlisted endpoint would leave
+      # the caller with no remedy.
+      egress-policy:
+        description: >-
+          harden-runner egress policy: "block" (default) or "audit". Use
+          "audit" to observe traffic while diagnosing a blocked endpoint.
+        type: string
+        required: false
+        default: block
+      allowed-endpoints:
+        description: >-
+          Space-separated host:port allowlist applied when egress-policy is
+          "block". Setting this replaces the built-in list rather than adding
+          to it. Ignored under "audit".
+        type: string
+        required: false
+        default: >-
+          github.com:443
+          api.github.com:443
+          codeload.github.com:443
+          objects.githubusercontent.com:443
+          release-assets.githubusercontent.com:443
+          raw.githubusercontent.com:443
+          *.actions.githubusercontent.com:443
+          *.blob.core.windows.net:443
     secrets:
       BOT_APP_ID:
         description: "App ID of the caller repo's <repo>-steward GitHub App."
@@ -44,7 +74,8 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: ${{ inputs.egress-policy }}
+          allowed-endpoints: ${{ inputs.allowed-endpoints }}
 
       - name: Fetch Dependabot metadata
         id: metadata
