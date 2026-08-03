@@ -23,7 +23,7 @@ on: pull_request_target
 
 jobs:
   automerge:
-    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v1
+    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v2
     secrets: inherit
 ```
 
@@ -33,7 +33,7 @@ Actions bumps but hand review for its language dependencies sets `ecosystems`:
 ```yaml
 jobs:
   automerge:
-    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v1
+    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v2
     with:
       ecosystems: github_actions
     secrets: inherit
@@ -57,30 +57,52 @@ triggers CI, which a `GITHUB_TOKEN` push does not.
 Registration tooling lives in the `git-repositories` infra repo
 (`scripts/new-repo-steward.sh`).
 
+### Egress
+
+The job runs `step-security/harden-runner` with `egress-policy: block`. Its egress
+is small and knowable — GitHub's API and the hosts the runner pulls actions and
+their assets from — so the built-in allowlist covers it, and a consumer that
+standardizes on `block` keeps that posture without configuring anything.
+
+A caller cannot re-harden a called workflow's steps from its stub, which is why
+the posture is exposed as inputs rather than fixed. If an update to one of the
+pinned actions reaches a host outside the list, the job fails closed: set
+`egress-policy: audit` to see what it wanted, then pass the corrected list via
+`allowed-endpoints`. Setting `allowed-endpoints` replaces the built-in list, so
+restate the defaults alongside any addition.
+
 ### Inputs
 
 | Input | Default | Notes |
 |---|---|---|
 | `merge-method` | `merge` | Passed to `gh pr merge`. Repos here use merge commits. |
 | `ecosystems` | *(empty — all)* | Comma-separated allowlist of Dependabot package ecosystems, no spaces (e.g. `github_actions,cargo`). |
+| `egress-policy` | `block` | `harden-runner` policy. `audit` observes instead of enforcing. |
+| `allowed-endpoints` | *(built-in list)* | Space-separated `host:port` allowlist used under `block`. Replaces the default rather than extending it. |
 
 ## Versioning
 
 Two kinds of tag, following the `actions/*` convention:
 
-- **`v1`** moves. It is only ever moved for backward-compatible changes — a new
-  optional input, a bug fix, a clearer log line. Cut `v2` for anything that
-  alters the calling contract (new required secret, changed input semantics,
+- **`v2`** moves. It is only ever moved for backward-compatible changes — a new
+  optional input, a bug fix, a clearer log line. Cut the next major for anything
+  that alters the calling contract (new required secret, changed input semantics,
   a default that behaves differently).
-- **`v1.<minor>.<patch>`** is immutable, cut alongside each move of `v1`.
+- **`v2.<minor>.<patch>`** is immutable, cut alongside each move of `v2`.
 
 Which one to pin depends on what a repo wants:
 
 | Pin | Behavior |
 |---|---|
-| `@v1` | Picks up compatible changes automatically. Fine for repos that want fixes without tending pins. |
-| `@v1.1.0` | Frozen. Nothing changes until the repo bumps it deliberately. |
+| `@v2` | Picks up compatible changes automatically. Fine for repos that want fixes without tending pins. |
+| `@v2.0.0` | Frozen. Nothing changes until the repo bumps it deliberately. |
 
 Both are tags in a repo you control, so neither is a supply-chain hazard the way
 a third-party moving tag would be — the choice is about how much automatic
 change a consumer wants, not about trust.
+
+`v2` was cut under the last clause of that first rule: `dependabot-automerge.yml`
+now blocks egress by default where `v1` audited it. A repo whose Dependabot PRs
+reach a host outside the built-in allowlist would see merges start failing on the
+move alone, so it is opt-in per repo rather than delivered by moving `v1`. `v1`
+stays on the auditing behavior.
