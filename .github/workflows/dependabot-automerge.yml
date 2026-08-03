@@ -13,6 +13,13 @@ on:
         type: string
         required: false
         default: merge
+      ecosystems:
+        description: >-
+          Comma-separated allowlist of Dependabot package ecosystems to act on
+          (e.g. "github_actions,cargo"), no spaces. Empty means every ecosystem.
+        type: string
+        required: false
+        default: ""
     secrets:
       BOT_APP_ID:
         description: "App ID of the caller repo's <repo>-steward GitHub App."
@@ -46,6 +53,38 @@ jobs:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           skip-commit-verification: true
 
+      # Majors are always left for manual review. When the caller sets an
+      # allowlist, ecosystems outside it are skipped too. Computed once so the
+      # merge and approve steps share one condition — and so a run with nothing
+      # to do says why and still ends green.
+      - name: Decide whether to act
+        id: scope
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          ECOSYSTEMS: ${{ inputs.ecosystems }}
+        run: |
+          set -euo pipefail
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
+            echo "skip: major update"
+            act=false
+          elif [ -z "$ECOSYSTEMS" ]; then
+            act=true
+          else
+            # Wrapping both sides in commas makes the match exact, so an entry
+            # cannot match a different ecosystem that merely contains it.
+            case ",$ECOSYSTEMS," in
+              *",$ECOSYSTEM,"*)
+                act=true
+                ;;
+              *)
+                echo "skip: $ECOSYSTEM not in allowlist ($ECOSYSTEMS)"
+                act=false
+                ;;
+            esac
+          fi
+          echo "act=$act" >> "$GITHUB_OUTPUT"
+
       # Most Dependabot PRs edit .github/workflows/*, and GitHub refuses to enable
       # auto-merge on those without the `workflow` permission — which GITHUB_TOKEN
       # cannot be granted through a workflow's permissions: block. A GitHub App
@@ -60,7 +99,7 @@ jobs:
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
       - name: Auto-merge minor and patch updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        if: steps.scope.outputs.act == 'true'
         run: gh pr merge --auto --"$MERGE_METHOD" "$PR_URL"
         env:
           MERGE_METHOD: ${{ inputs.merge-method }}
@@ -68,7 +107,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Approve PR
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        if: steps.scope.outputs.act == 'true'
         run: gh pr review --approve "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
