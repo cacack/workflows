@@ -23,7 +23,7 @@ on: pull_request_target
 
 jobs:
   automerge:
-    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v2
+    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@42f4a8b03bbeb4cda758290b3c8cdbb88ed6d33e # v2.0.0
     secrets: inherit
 ```
 
@@ -33,7 +33,7 @@ Actions bumps but hand review for its language dependencies sets `ecosystems`:
 ```yaml
 jobs:
   automerge:
-    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@v2
+    uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@42f4a8b03bbeb4cda758290b3c8cdbb88ed6d33e # v2.0.0
     with:
       ecosystems: github_actions
     secrets: inherit
@@ -88,18 +88,24 @@ Two kinds of tag, following the `actions/*` convention:
   optional input, a bug fix, a clearer log line. Cut the next major for anything
   that alters the calling contract (new required secret, changed input semantics,
   a default that behaves differently).
-- **`v2.<minor>.<patch>`** is immutable, cut alongside each move of `v2`.
+- **`v2.<minor>.<patch>`** is fixed by convention, cut alongside each move of
+  `v2`. Convention is all it is — git does not stop a force-push to any tag.
 
 Which one to pin depends on what a repo wants:
 
 | Pin | Behavior |
 |---|---|
+| `@<sha> # v2.0.0` | The only pin git enforces. Preferred — Dependabot bumps the SHA and the comment for you. |
+| `@v2.0.0` | Fixed by convention. Readable, but a force-push would move it. |
 | `@v2` | Picks up compatible changes automatically. Fine for repos that want fixes without tending pins. |
-| `@v2.0.0` | Frozen. Nothing changes until the repo bumps it deliberately. |
 
-Both are tags in a repo you control, so neither is a supply-chain hazard the way
-a third-party moving tag would be — the choice is about how much automatic
-change a consumer wants, not about trust.
+Prefer the SHA. It is what the `actions/*` ecosystem settled on, it is what
+OpenSSF Scorecard's `Pinned-Dependencies` check looks for — which does evaluate
+reusable-workflow `uses:` refs, not just actions — and it costs nothing to
+maintain, since Dependabot treats this reference like any other action.
+
+That these are tags in a repo you control lowers the stakes but does not remove
+them: an account compromise that can move a tag can move it here too.
 
 `v2` was cut under the last clause of that first rule: `dependabot-automerge.yml`
 now blocks egress by default where `v1` audited it. A repo whose Dependabot PRs
