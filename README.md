@@ -24,8 +24,13 @@ on: pull_request_target
 jobs:
   automerge:
     uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@42f4a8b03bbeb4cda758290b3c8cdbb88ed6d33e # v2.0.0
-    secrets: inherit
+    secrets:
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
 ```
+
+`secrets: inherit` is shorter and also works, but it hands this workflow every
+secret the calling repo holds when it declares exactly two. Map them.
 
 By default every ecosystem is in scope. A repo that wants auto-merge for its
 Actions bumps but hand review for its language dependencies sets `ecosystems`:
@@ -36,7 +41,9 @@ jobs:
     uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@42f4a8b03bbeb4cda758290b3c8cdbb88ed6d33e # v2.0.0
     with:
       ecosystems: github_actions
-    secrets: inherit
+    secrets:
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
 ```
 
 A PR outside the allowlist logs why it was skipped and the run ends green.
@@ -46,7 +53,7 @@ A PR outside the allowlist logs why it was skipped and the run ends green.
 The calling repo needs a GitHub App — named `<repo>-steward` by convention — with
 **Contents: write**, **Pull requests: write**, and **Workflows: write**, installed
 on that repo only, exposed as the Actions secrets `BOT_APP_ID` and
-`BOT_PRIVATE_KEY`. `secrets: inherit` passes them through.
+`BOT_PRIVATE_KEY`. The stub maps them through by name.
 
 `Workflows: write` is the load-bearing one. Most Dependabot PRs edit
 `.github/workflows/*`, and GitHub refuses to enable auto-merge on such a PR
