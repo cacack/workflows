@@ -1,7 +1,7 @@
 name: Dependabot Auto-Merge
 
-# Reusable: callers keep a stub that triggers on pull_request_target and calls
-# this with `secrets: inherit`. See README.md.
+# Reusable: callers keep a stub that triggers on pull_request_target and maps
+# the two secrets below through by name. See README.md.
 #
 # The called workflow sees the caller's event context, so github.event.pull_request
 # refers to the caller repo's PR.
