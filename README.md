@@ -21,6 +21,10 @@ name: Dependabot Auto-Merge
 
 on: pull_request_target
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   automerge:
     uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@42f4a8b03bbeb4cda758290b3c8cdbb88ed6d33e # v2.0.0
@@ -32,10 +36,16 @@ jobs:
 `secrets: inherit` is shorter and also works, but it hands this workflow every
 secret the calling repo holds when it declares exactly two. Map them.
 
+The `permissions:` block is not optional — see [Permissions](#permissions).
+
 By default every ecosystem is in scope. A repo that wants auto-merge for its
 Actions bumps but hand review for its language dependencies sets `ecosystems`:
 
 ```yaml
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   automerge:
     uses: cacack/workflows/.github/workflows/dependabot-automerge.yml@42f4a8b03bbeb4cda758290b3c8cdbb88ed6d33e # v2.0.0
@@ -63,6 +73,32 @@ triggers CI, which a `GITHUB_TOKEN` push does not.
 
 Registration tooling lives in the `git-repositories` infra repo
 (`scripts/new-repo-steward.sh`).
+
+### Permissions
+
+The stub must grant at least what the called job declares:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: read
+```
+
+A called workflow's job cannot request more permission than its caller grants.
+Ask for less and GitHub rejects the call with `startup_failure` — the run ends
+before any step executes, so there is no log explaining it and no check to read.
+`pull-requests` is the one people miss; `fetch-metadata` needs it to read the PR.
+
+Omitting the block entirely is not a safe shortcut. It falls back to the repo's
+default `GITHUB_TOKEN` permissions, and the hardened default — *Read repository
+contents and packages permissions* — does not include `pull-requests`, so a
+hardened repo fails the same way. Declare it.
+
+This is worth stating plainly because the failure is invisible until a real
+Dependabot PR arrives. `pull_request_target` evaluates the **base branch's**
+workflow, so the stub does not execute on the PR that introduces it — the
+conversion looks clean and the first bump weeks later does not merge.
+`cacack/gedcom-go#371` sat green and open for five days on exactly this.
 
 ### Egress
 
