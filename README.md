@@ -58,6 +58,51 @@ jobs:
 
 A PR outside the allowlist logs why it was skipped and the run ends green.
 
+### Merge commits and release-please
+
+Under `merge-method: merge`, what lands in the *body* of the merge commit is decided
+by the repo's `merge_commit_message` setting, whose GitHub default is `PR_TITLE`.
+Dependabot titles its PRs conventionally (`fix(deps): bump …`), so that default
+copies a conventional commit into the merge commit — and a consumer running
+release-please over merge commits parses the same bump twice: once from the branch
+commit, once from the merge commit. The result is a duplicated changelog entry and a
+version bump driven by a commit that was already counted.
+
+Two details make it sharper than it looks. GitHub snapshots the merge commit message
+when auto-merge is **enabled**, not when it fires, so the body freezes to whatever
+the title was at that instant. And Dependabot rewrites the PR title on every rebase,
+and again when a newer version supersedes an open PR — so the value being frozen is
+one that changes underneath you.
+
+This workflow therefore passes an explicit subject and an explicit body rather than
+letting either default. The subject reproduces GitHub's own
+(`Merge pull request #N from owner/branch`); the body is empty, which leaves the
+branch's own conventional commit as release-please's sole input — the correct number
+of times to count it. `merge-commit-body` can override the body, but the empty
+default is the point: a latent duplicate-changelog bug should not be opt-out. A repo
+whose Dependabot prefix is not release-driving is unaffected either way and loses
+nothing, since the merge commit body was not carrying information the branch commit
+lacks.
+
+`squash` and `rebase` are deliberately left alone. A rebase produces no merge commit
+at all, and under `squash` the squash commit **is** the only commit release-please
+sees — overriding its subject would delete the conventional commit rather than
+protect it.
+
+The subject is not exposed as an input. A repo that has set
+`merge_commit_title: PR_TITLE` loses that preference here, deliberately: a PR-title
+subject reintroduces the same double-parse this section exists to prevent.
+
+Both halves are needed. Passing only `--body` would leave the title-derived subject
+in play, and omitting `--body` is not the same as passing an empty one — `gh` sends
+the field only when the flag is supplied, so an omitted body falls back to
+`merge_commit_message` and the title reappears.
+
+One caveat: this covers base branches **without a merge queue**. A queue composes the
+merge commit itself, and `gh` says as much — it warns that the merge strategy is the
+queue's to set. A queue-enabled consumer should check its own changelog rather than
+assume this settles it.
+
 ### Requirements
 
 The calling repo needs a GitHub App — named `<repo>-steward` by convention — with
@@ -120,6 +165,7 @@ restate the defaults alongside any addition.
 |---|---|---|
 | `merge-method` | `merge` | Passed to `gh pr merge`. Repos here use merge commits. |
 | `ecosystems` | *(empty — all)* | Comma-separated allowlist of Dependabot package ecosystems, no spaces (e.g. `github_actions,cargo`). |
+| `merge-commit-body` | *(empty)* | Body of the merge commit under `merge-method: merge`. Empty keeps Dependabot's conventional PR title out of the merge commit, so release-please counts a bump once. Ignored for `squash` and `rebase`. |
 | `egress-policy` | `block` | `harden-runner` policy. `audit` observes instead of enforcing. |
 | `allowed-endpoints` | *(built-in list)* | Space-separated `host:port` allowlist used under `block`. Replaces the default rather than extending it. |
 
