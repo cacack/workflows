@@ -123,6 +123,99 @@ restate the defaults alongside any addition.
 | `egress-policy` | `block` | `harden-runner` policy. `audit` observes instead of enforcing. |
 | `allowed-endpoints` | *(built-in list)* | Space-separated `host:port` allowlist used under `block`. Replaces the default rather than extending it. |
 
+## `dependabot-watch.yml`
+
+Fails, and files one deduplicated issue, when a Dependabot advisory has been open
+longer than a grace period. Closes that issue again on the next clean run.
+
+It exists because a repo can be entirely green — CI passing, site up — and still be
+sitting on an open high-severity alert: nothing in a normal merge flow ever asks
+GitHub whether alerts are open. In the incident that prompted it, an alert stayed
+open for 25 days with no Dependabot PR, even though a satisfying fix had been
+published ten days before the alert opened. It was found only because someone went
+looking.
+
+It watches the *symptom* — an alert that is open and staying open — not the cause.
+Why Dependabot skips a given alert is recorded only in the update-job logs at
+`/network/updates`, which no REST endpoint exposes, so the cause is not detectable
+from automation at all.
+
+**Consumer stub** — `.github/workflows/dependabot-watch.yml`:
+
+```yaml
+name: Dependabot watch
+
+on:
+  schedule:
+    - cron: '43 13 * * *'
+  workflow_dispatch:
+    inputs:
+      grace_days:
+        description: Grace period in days (overrides the default)
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    uses: cacack/workflows/.github/workflows/dependabot-watch.yml@<sha> # v2.1.0
+    with:
+      grace-days: ${{ inputs.grace_days }}
+      threshold-doc-url: https://github.com/<owner>/<repo>/blob/main/docs/decisions/NNNN.md
+    secrets:
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+```
+
+**The schedule lives in the stub, not here.** A `workflow_call` workflow cannot
+declare `schedule`, so each consumer owns its own cron — which is what you want
+anyway, to stagger runs against whatever else that repo runs daily.
+
+`grace-days` is a *string* whose default is empty rather than a number defaulting to
+7, so the stub above can pass a dispatch input straight through. On a scheduled run
+that expression is empty, and an explicitly-passed empty value does **not** fall back
+to an input's default — only an omitted input does. The workflow therefore resolves
+the fallback in shell (`${GRACE_DAYS:-7}`). Doing it in an expression with
+`${{ inputs.grace-days || 7 }}` would look equivalent and quietly rewrite a
+deliberate `grace-days: 0` into `7`, because GitHub treats the string `"0"` as falsy.
+
+### Credentials
+
+`GITHUB_TOKEN` **cannot** read the Dependabot alerts API — `security-events: read`
+looks like the permission that covers it and does not; the API answers `403 Resource
+not accessible by integration`. The alerts read therefore authenticates as the
+caller's `<repo>-steward` App.
+
+Only that one step uses the App token; the issue it files and closes still runs as
+`GITHUB_TOKEN`. So the App needs exactly one permission, **Dependabot alerts: read** —
+narrower than what `dependabot-automerge.yml` asks of the same App. A PAT would also
+work and is not recommended: it is a long-lived credential tied to a person, and a
+watch whose purpose is to prevent a silent failure should not be guarded by one.
+
+### Permissions
+
+As with `dependabot-automerge.yml`, the stub must grant at least what the called job
+declares — `contents: read` and `issues: write`. Ask for less and GitHub rejects the
+call with `startup_failure`, before any step executes, with no log explaining it.
+`issues: write` is the one to get right here: without it the workflow detects a stale
+advisory and then cannot tell anyone, which is the failure it exists to prevent.
+
+### Inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `grace-days` | *(empty → 7)* | Days an alert may stay open before the run fails. String, so a dispatch input passes straight through. |
+| `severities` | `high,critical` | Comma-separated severities that fail the run, no spaces. Everything else open is logged as context. |
+| `threshold-doc-url` | *(empty)* | Link to the consumer's own decision record for the grace period, cited in the filed issue. Empty omits the citation. |
+| `egress-policy` | `block` | `harden-runner` policy. `audit` observes instead of enforcing. |
+| `allowed-endpoints` | *(built-in list)* | Space-separated `host:port` allowlist used under `block`. Replaces the default rather than extending it. |
+
+Leaving `threshold-doc-url` empty is fine, but if the repo has written its grace
+period down somewhere, pass it: the filed issue then points at that decision instead
+of implying this workflow is where the number lives.
+
 ## Versioning
 
 Two kinds of tag, following the `actions/*` convention:
