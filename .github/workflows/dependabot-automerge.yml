@@ -20,6 +20,15 @@ on:
         type: string
         required: false
         default: ""
+      merge-commit-body:
+        description: >-
+          Body of the merge commit, used only when merge-method is "merge".
+          Empty by default: on a repo whose merge_commit_message is PR_TITLE,
+          a body left to GitHub inherits Dependabot's conventional PR title,
+          which release-please then parses a second time.
+        type: string
+        required: false
+        default: ""
       # This job's egress is small and knowable, and it is the most
       # supply-chain-sensitive one in the set — an App token with Contents,
       # Pull requests, and Workflows write, on pull_request_target. So it
@@ -129,11 +138,31 @@ jobs:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
+      # --body "" is not the same as omitting --body: gh sends commitBody only
+      # when the flag was supplied, and an omitted body lets the repo's
+      # merge_commit_message setting put the PR title there instead. --subject
+      # is needed for the same reason in reverse — --body alone still leaves
+      # the title-derived subject in play. Squash and rebase keep the plain
+      # call. See README, "Merge commits and release-please", for why any of
+      # this matters.
       - name: Auto-merge minor and patch updates
         if: steps.scope.outputs.act == 'true'
-        run: gh pr merge --auto --"$MERGE_METHOD" "$PR_URL"
+        run: |
+          set -euo pipefail
+          if [ "$MERGE_METHOD" = "merge" ]; then
+            gh pr merge --auto --merge \
+              --subject "Merge pull request #${PR_NUMBER} from ${HEAD_OWNER}/${HEAD_REF}" \
+              --body "$MERGE_BODY" \
+              "$PR_URL"
+          else
+            gh pr merge --auto --"$MERGE_METHOD" "$PR_URL"
+          fi
         env:
           MERGE_METHOD: ${{ inputs.merge-method }}
+          MERGE_BODY: ${{ inputs.merge-commit-body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
