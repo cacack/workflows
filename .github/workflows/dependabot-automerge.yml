@@ -93,20 +93,52 @@ jobs:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           skip-commit-verification: true
 
-      # Majors are always left for manual review. When the caller sets an
-      # allowlist, ecosystems outside it are skipped too. Computed once so the
-      # merge and approve steps share one condition — and so a run with nothing
-      # to do says why and still ends green.
+      # Majors are left for manual review, and so is anything Dependabot declines
+      # to classify. When the caller sets an allowlist, ecosystems outside it are
+      # skipped too. Computed once so the merge and approve steps share one
+      # condition — and so a run with nothing to do says why and still ends green.
       - name: Decide whether to act
         id: scope
         env:
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          PREVIOUS: ${{ steps.metadata.outputs.previous-version }}
+          NEW: ${{ steps.metadata.outputs.new-version }}
           ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
           ECOSYSTEMS: ${{ inputs.ecosystems }}
         run: |
           set -euo pipefail
-          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
-            echo "skip: major update"
+
+          # Dependabot omits update-type for indirect (transitive) dependencies,
+          # so an empty value must not read as "not a major". Fall back to
+          # comparing major components, and deny anything that will not parse:
+          # absence of information is not permission.
+          major() { printf '%s' "$1" | grep -oE '^[0-9]+' || true; }
+
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch|version-update:semver-minor)
+              within_major=true
+              ;;
+            version-update:semver-major)
+              echo "skip: major update"
+              within_major=false
+              ;;
+            *)
+              prev_major=$(major "$PREVIOUS")
+              new_major=$(major "$NEW")
+              if [ -z "$prev_major" ] || [ -z "$new_major" ]; then
+                echo "skip: no update-type, and versions do not parse ('$PREVIOUS' -> '$NEW')"
+                within_major=false
+              elif [ "$prev_major" = "$new_major" ]; then
+                echo "no update-type; within major $new_major ($PREVIOUS -> $NEW)"
+                within_major=true
+              else
+                echo "skip: no update-type; major change ($PREVIOUS -> $NEW)"
+                within_major=false
+              fi
+              ;;
+          esac
+
+          if [ "$within_major" = false ]; then
             act=false
           elif [ -z "$ECOSYSTEMS" ]; then
             act=true
