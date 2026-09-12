@@ -12,7 +12,19 @@ blast to all of them.
 ## `dependabot-automerge.yml`
 
 Enables GitHub auto-merge on Dependabot PRs for non-major updates, and approves
-them. Majors are left alone for manual review.
+them. Majors are left alone for manual review — and so is any bump Dependabot
+declines to classify.
+
+That second clause is load-bearing. Dependabot omits its `update-type` for
+indirect (transitive) dependencies, so an unclassified bump is not "not a major",
+it is a bump nothing has judged. The workflow falls back to comparing the version
+numbers itself and skips anything that will not parse: absence of information
+means review, not merge. A repo that compiles its dependencies into shipped
+output would otherwise publish an unreviewed major.
+
+This tightened in `v2.3.0`. A repo that was auto-merging transitive bumps will
+see some of them start waiting for review — that is the correction, not a
+regression, and the run log says which test a skipped bump failed.
 
 **Consumer stub** — `.github/workflows/dependabot-automerge.yml`:
 
