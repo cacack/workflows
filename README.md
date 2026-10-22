@@ -274,6 +274,100 @@ Leaving `threshold-doc-url` empty is fine, but if the repo has written its grace
 period down somewhere, pass it: the filed issue then points at that decision instead
 of implying this workflow is where the number lives.
 
+## `dependabot-rebase.yml`
+
+A one-at-a-time rebase train that lets `dependabot-automerge.yml` work under a
+ruleset with **require branches to be up to date** (strict) turned on, so each
+bump merges against the exact base its CI ran on and history stays semi-linear:
+rebased branch commits, then a merge commit.
+
+Without it, strict and auto-merge deadlock. GitHub's auto-merge never updates a
+BEHIND branch, and Dependabot rebases only on conflicts, so the first bump merges
+and every other open one sits BEHIND forever. A merge queue is the native fix,
+but GitHub offers it only on organization-owned repositories.
+
+Each run, acting as the caller's App:
+
+1. Lists open Dependabot PRs into the default branch with auto-merge armed,
+   oldest first. Unarmed ones — majors, unclassified bumps — stay with a human.
+2. Does nothing if one is in flight: up to date, not conflicting, checks not
+   failed. Rebasing a second PR now would only make it BEHIND again the moment
+   the first lands.
+3. Otherwise rebases the oldest BEHIND PR whose checks have not failed, with
+   GraphQL `updatePullRequestBranch(updateMethod: REBASE)` guarded by
+   `expectedHeadOid`.
+
+A BEHIND PR that already failed is skipped rather than retried; being oldest, it
+would otherwise be picked on every push and starve the rest. Conflicting (DIRTY)
+PRs are left to Dependabot. Every run that does nothing says why in its log.
+
+**Trade-off:** once the App rewrites a Dependabot branch, Dependabot no longer
+updates that PR. On the happy path that is moot — it merges next. A PR that goes
+red after the rebase needs fixing by hand, or closing so Dependabot reopens it.
+
+**Consumer stub** — `.github/workflows/dependabot-rebase.yml`:
+
+```yaml
+name: Dependabot Rebase
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [auto_merge_enabled]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  rebase:
+    # workflow_run fires for every CI run; only a failed Dependabot run can
+    # free the train.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'failure' &&
+       startsWith(github.event.workflow_run.head_branch, 'dependabot/'))
+    uses: cacack/workflows/.github/workflows/dependabot-rebase.yml@<sha> # v2.4.0
+    secrets:
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
+```
+
+Each trigger restarts the train at a different point: `push` when the in-flight
+PR merges, `auto_merge_enabled` when a new bump is armed, and `workflow_run` when
+the in-flight PR's CI fails. Name the repo's required-check workflow under
+`workflows:`.
+
+The `push` trigger relies on the merge being made by the App.
+`dependabot-automerge.yml` arms auto-merge with the App token, so the merge
+commit fans out events; a merge made with `GITHUB_TOKEN` would not, and the train
+would stall until the next push.
+
+### Requirements
+
+The same `<repo>-steward` App and secrets as `dependabot-automerge.yml`, with the
+same three permissions. Workflows: write matters here too: the rebase rewrites
+branches that touch `.github/workflows/*`. An App token is also what makes the
+rebased branch's CI run at all, since a `GITHUB_TOKEN` push triggers nothing.
+
+Strict must be on. With it off, GitHub never reports BEHIND and this workflow
+never acts.
+
+### Permissions
+
+The stub grants `contents: read`. The job itself declares none: everything it
+does is as the App.
+
+### Inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `egress-policy` | `block` | As for `dependabot-automerge.yml`. |
+| `allowed-endpoints` | *(built-in list)* | As for `dependabot-automerge.yml`. |
+
 ## Versioning
 
 Two kinds of tag, following the `actions/*` convention:
