@@ -117,19 +117,16 @@ assume this settles it.
 
 ### Requirements
 
-The calling repo needs a GitHub App — named `<repo>-steward` by convention — with
-**Contents: write**, **Pull requests: write**, and **Workflows: write**, installed
-on that repo only, exposed as the Actions secrets `BOT_APP_ID` and
-`BOT_PRIVATE_KEY`. The stub maps them through by name.
+The calling repo needs [the Dependabot App](#the-dependabot-app), with its key in
+the repo's `dependabot` environment. This job's token takes **Contents: write**,
+**Pull requests: write**, and **Workflows: write**. The stub maps the two secrets
+through by name.
 
 `Workflows: write` is the load-bearing one. Most Dependabot PRs edit
 `.github/workflows/*`, and GitHub refuses to enable auto-merge on such a PR
 without it — a permission `GITHUB_TOKEN` cannot be granted through a workflow's
 `permissions:` block. Using an App token also means the resulting merge commit
 triggers CI, which a `GITHUB_TOKEN` push does not.
-
-Registration tooling lives in the `git-repositories` infra repo
-(`scripts/new-repo-steward.sh`).
 
 ### Permissions
 
@@ -243,11 +240,11 @@ deliberate `grace-days: 0` into `7`, because GitHub treats the string `"0"` as f
 
 `GITHUB_TOKEN` **cannot** read the Dependabot alerts API — `security-events: read`
 looks like the permission that covers it and does not; the API answers `403 Resource
-not accessible by integration`. The alerts read therefore authenticates as the
-caller's `<repo>-steward` App.
+not accessible by integration`. The alerts read therefore authenticates as
+[the Dependabot App](#the-dependabot-app).
 
 Only that one step uses the App token; the issue it files and closes still runs as
-`GITHUB_TOKEN`. So the App needs exactly one permission, **Dependabot alerts: read** —
+`GITHUB_TOKEN`. So the token takes exactly one permission, **Dependabot alerts: read** —
 narrower than what `dependabot-automerge.yml` asks of the same App. A PAT would also
 work and is not recommended: it is a long-lived credential tied to a person, and a
 watch whose purpose is to prevent a silent failure should not be guarded by one.
@@ -273,6 +270,72 @@ advisory and then cannot tell anyone, which is the failure it exists to prevent.
 Leaving `threshold-doc-url` empty is fine, but if the repo has written its grace
 period down somewhere, pass it: the filed issue then points at that decision instead
 of implying this workflow is where the number lives.
+
+## The Dependabot App
+
+Every Dependabot workflow here authenticates as one GitHub App kept for that job
+alone, and separate from release automation, so a problem with one cannot take
+down the other. It holds:
+
+| Permission | Used by |
+|---|---|
+| Contents: write | `dependabot-automerge.yml` |
+| Pull requests: write | `dependabot-automerge.yml` |
+| Workflows: write | `dependabot-automerge.yml` |
+| Dependabot alerts: read | `dependabot-watch.yml` |
+| Metadata: read | GitHub requires it |
+
+Configure it with no webhook, no user authorization, and "Only on this account".
+Install it on the repos that use these workflows, not on all repositories. Keep it
+out of every ruleset's bypass list: rulesets then bind the App like anyone else, so
+even a stolen token cannot push to the default branch or skip required checks.
+
+### Keeping the key to these jobs
+
+An App cannot be limited to Dependabot. Its permissions belong to the
+installation, and anything holding the private key can mint a token with all of
+them. So the protection is about who can reach the key.
+
+A repo-level Actions secret is readable by any workflow in the repo, including one
+added on a pushed branch. Instead, each caller keeps the key in an environment:
+
+1. Create an environment named `dependabot`. Under *Deployment branches and tags*,
+   allow only the default branch.
+2. Add `BOT_APP_ID` and `BOT_PRIVATE_KEY` to that environment.
+3. Delete the repo-level secrets with the same names.
+
+Every job here that mints a token declares `environment: dependabot`, so only a
+job running from the default branch can read the key. That fits all their
+triggers: GitHub matches the policy against `GITHUB_REF`, which is the default
+branch for `push`, `schedule`, and `workflow_run`, and the base branch for
+`pull_request_target`. Reaching the key then means merging a workflow change
+first.
+
+The stub still maps both secrets by name. GitHub requires the caller to pass a
+secret even when it exists only in the environment; one it does not pass
+resolves to an empty string.
+
+Each run records a deployment to the environment. That is the cost of the branch
+policy: `deployment: false` would skip the record, but GitHub does not document
+whether branch policies still apply then.
+
+Each job also asks for only the permissions it uses, for the caller repo only, and
+the token is revoked when the job ends. A token that leaks from one job is not the
+whole App.
+
+Environment secrets need a public repo on GitHub Free, or GitHub Pro for a
+private one.
+
+### Moving an existing repo
+
+Nothing breaks before a repo is moved. A workflow that references a missing
+environment creates it with no rules and no secrets, and the job then falls back
+to the repo-level `BOT_*` secrets. The key is not protected until steps 1–3 above
+are done.
+
+One key serves every repo, so a rotation is: generate the new key, update
+`BOT_PRIVATE_KEY` in every repo's environment, then delete the old key. A rotation
+left half done fails every repo not yet updated, at the token step.
 
 ## Versioning
 
