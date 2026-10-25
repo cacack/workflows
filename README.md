@@ -348,8 +348,9 @@ would stall until the next push.
 
 ### Requirements
 
-The same `<repo>-steward` App and secrets as `dependabot-automerge.yml`, with the
-same three permissions. Workflows: write matters here too: the rebase rewrites
+[The Dependabot App](#the-dependabot-app), with its key in the repo's `dependabot`
+environment. This job's token takes the same three permissions as
+`dependabot-automerge.yml`. Workflows: write matters here too: the rebase rewrites
 branches that touch `.github/workflows/*`. An App token is also what makes the
 rebased branch's CI run at all, since a `GITHUB_TOKEN` push triggers nothing.
 

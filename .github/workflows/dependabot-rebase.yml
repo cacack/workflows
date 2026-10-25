@@ -45,12 +45,15 @@ on:
           raw.githubusercontent.com:443
           *.actions.githubusercontent.com:443
           *.blob.core.windows.net:443
+    # Store both in the caller's `dependabot` environment, not as repo secrets.
+    # The stub still maps them by name: GitHub requires that even for secrets
+    # that exist only in the environment.
     secrets:
       BOT_APP_ID:
-        description: "App ID of the caller repo's <repo>-steward GitHub App."
+        description: "App ID of the Dependabot GitHub App (README, \"The Dependabot App\")."
         required: true
       BOT_PRIVATE_KEY:
-        description: "Private key of that App. Needs Contents, Pull requests, and Workflows write."
+        description: "Private key of that App. This job mints Contents, Pull requests, and Workflows write."
         required: true
 
 permissions:
@@ -66,6 +69,10 @@ concurrency:
 jobs:
   rebase:
     runs-on: ubuntu-latest
+    # The App's key lives in the caller's `dependabot` environment, limited to
+    # the default branch, so only a job running from there can mint with it.
+    # See README, "The Dependabot App".
+    environment: dependabot
     # GITHUB_TOKEN does nothing here; the read and the rebase act as the App.
     permissions: {}
     steps:
@@ -80,12 +87,19 @@ jobs:
       # run and auto-merge would wait forever. And Dependabot branches usually
       # touch .github/workflows/*, which needs the Workflows permission that
       # GITHUB_TOKEN cannot be granted.
+      #
+      # The token asks for exactly what the read and the rebase use, covers
+      # only the caller repo (the action's default), and is revoked when the
+      # job ends.
       - name: Generate app token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
 
       - name: Rebase the next Dependabot PR
         env:
