@@ -59,12 +59,15 @@ on:
           raw.githubusercontent.com:443
           *.actions.githubusercontent.com:443
           *.blob.core.windows.net:443
+    # Store both in the caller's `dependabot` environment, not as repo secrets.
+    # The stub still maps them by name: GitHub requires that even for secrets
+    # that exist only in the environment.
     secrets:
       BOT_APP_ID:
-        description: "App ID of the caller repo's <repo>-steward GitHub App."
+        description: "App ID of the Dependabot GitHub App (README, \"The Dependabot App\")."
         required: true
       BOT_PRIVATE_KEY:
-        description: "Private key of that App. Needs Contents, Pull requests, and Workflows write."
+        description: "Private key of that App. This job mints Contents, Pull requests, and Workflows write."
         required: true
 
 permissions:
@@ -74,6 +77,10 @@ jobs:
   automerge:
     runs-on: ubuntu-latest
     if: github.event.pull_request.user.login == 'dependabot[bot]'
+    # The App's key lives in the caller's `dependabot` environment, limited to
+    # the default branch, so only a job running from there can mint with it.
+    # See README, "The Dependabot App".
+    environment: dependabot
     # GITHUB_TOKEN only reads PR metadata here; the merge and approve steps act
     # as the caller repo's GitHub App instead (see the token step below).
     permissions:
@@ -163,12 +170,20 @@ jobs:
       # installation token can hold it, and expires with the job, so there is no
       # PAT to rotate. An App token also triggers workflow runs on the resulting
       # merge commit, which GITHUB_TOKEN does not.
+      #
+      # The token asks for exactly what the merge and approve steps use, so it
+      # stays this narrow even if the App gains permissions for another job. It
+      # covers only the caller repo (the action's default) and is revoked when
+      # the job ends.
       - name: Generate app token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
 
       # --body "" is not the same as omitting --body: gh sends commitBody only
       # when the flag was supplied, and an omitted body lets the repo's
