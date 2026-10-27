@@ -78,10 +78,10 @@ on:
           *.blob.core.windows.net:443
     secrets:
       BOT_APP_ID:
-        description: "App ID of the caller repo's <repo>-steward GitHub App."
+        description: "App ID of the Dependabot GitHub App (README, \"The Dependabot App\")."
         required: true
       BOT_PRIVATE_KEY:
-        description: "Private key of that App. Needs Dependabot alerts: read."
+        description: "Private key of that App. This job mints Dependabot alerts: read."
         required: true
 
 env:
@@ -93,12 +93,16 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The App's key lives in the caller's `dependabot` environment, limited to
+    # the default branch, so only a job running from there can mint with it.
+    # See README, "The Dependabot App".
+    environment: dependabot
     # `security-events: read` is deliberately absent: it looks like the
     # permission that covers this and does not. GITHUB_TOKEN cannot read the
     # Dependabot alerts API at all -- it returns `403 Resource not accessible by
     # integration` -- so the read below authenticates as the caller's App
-    # instead. `issues: write` stays on GITHUB_TOKEN, which is why the App needs
-    # only one permission.
+    # instead. `issues: write` stays on GITHUB_TOKEN, which is why the App token
+    # needs only one permission.
     permissions:
       contents: read
       issues: write
@@ -125,15 +129,18 @@ jobs:
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          # The App also holds write permissions for the other Dependabot jobs;
+          # this token takes only the one read it needs.
+          permission-vulnerability-alerts: read
 
       - name: Read open Dependabot alerts
         env:
-          # The App needs exactly one permission (Dependabot alerts: read), so it
+          # The token holds exactly one permission (Dependabot alerts: read), and
           # is scoped to this step. Everything else still runs as GITHUB_TOKEN.
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -uo pipefail
-          # Normalised in shell rather than with `${{ inputs.grace-days || 7 }}`,
+          # Normalised in shell rather than with an `inputs.grace-days || 7` expression,
           # because GitHub's `||` treats the string "0" as falsy and would
           # silently rewrite a deliberate `grace-days: 0` into the default. POSIX
           # `:-` substitutes only when unset or empty, so "0" survives. Exported
