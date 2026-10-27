@@ -1,0 +1,196 @@
+name: Dependabot Rebase
+
+# Reusable: callers keep a stub that supplies the triggers and maps the two
+# secrets below through by name. See README.md.
+#
+# A one-at-a-time rebase train for Dependabot auto-merge under a strict
+# ("require branches to be up to date") ruleset. GitHub's auto-merge never
+# updates a BEHIND branch and Dependabot rebases only on conflicts, so without
+# this, every merge strands the rest of the open bumps. A merge queue is the
+# native fix, but GitHub offers it only on organization-owned repositories.
+#
+# Each run rebases at most one PR, and none while another is in flight, so CI
+# cost stays linear in the number of bumps rather than quadratic. The next
+# run comes from the caller's triggers: the in-flight PR merging (a push to the
+# default branch) or failing (its CI completing red).
+#
+# The called workflow sees the caller's event context, so github.repository
+# refers to the caller repo throughout.
+on:
+  workflow_call:
+    inputs:
+      # Same rationale as dependabot-automerge.yml: the egress is small and
+      # knowable, so it blocks by default, and a caller cannot re-harden a
+      # called workflow's steps from its stub.
+      egress-policy:
+        description: >-
+          harden-runner egress policy: "block" (default) or "audit". Use
+          "audit" to observe traffic while diagnosing a blocked endpoint.
+        type: string
+        required: false
+        default: block
+      allowed-endpoints:
+        description: >-
+          Space-separated host:port allowlist applied when egress-policy is
+          "block". Setting this replaces the built-in list rather than adding
+          to it. Ignored under "audit".
+        type: string
+        required: false
+        default: >-
+          github.com:443
+          api.github.com:443
+          codeload.github.com:443
+          objects.githubusercontent.com:443
+          release-assets.githubusercontent.com:443
+          raw.githubusercontent.com:443
+          *.actions.githubusercontent.com:443
+          *.blob.core.windows.net:443
+    # Store both in the caller's `dependabot` environment, not as repo secrets.
+    # The stub still maps them by name: GitHub requires that even for secrets
+    # that exist only in the environment.
+    secrets:
+      BOT_APP_ID:
+        description: "App ID of the Dependabot GitHub App (README, \"The Dependabot App\")."
+        required: true
+      BOT_PRIVATE_KEY:
+        description: "Private key of that App. This job mints Contents, Pull requests, and Workflows write."
+        required: true
+
+permissions:
+  contents: read
+
+# One train per repo. Not cancel-in-progress: a cancelled run could be the one
+# that saw the in-flight PR fail, and nothing else would come to restart the
+# train until the default branch next moves.
+concurrency:
+  group: dependabot-rebase-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    # The App's key lives in the caller's `dependabot` environment, limited to
+    # the default branch, so only a job running from there can mint with it.
+    # See README, "The Dependabot App".
+    environment: dependabot
+    # GITHUB_TOKEN does nothing here; the read and the rebase act as the App.
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: ${{ inputs.egress-policy }}
+          allowed-endpoints: ${{ inputs.allowed-endpoints }}
+
+      # The App, not GITHUB_TOKEN, for two reasons. A branch update pushed by
+      # GITHUB_TOKEN triggers no workflows, so the rebased PR's CI would never
+      # run and auto-merge would wait forever. And Dependabot branches usually
+      # touch .github/workflows/*, which needs the Workflows permission that
+      # GITHUB_TOKEN cannot be granted.
+      #
+      # The token asks for exactly what the read and the rebase use, covers
+      # only the caller repo (the action's default), and is revoked when the
+      # job ends.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Rebase the next Dependabot PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          NAME="${GITHUB_REPOSITORY#*/}"
+
+          # Oldest first, so a PR is never starved by newer ones. 100 open PRs
+          # is far beyond any real Dependabot backlog, so no pagination. The
+          # $variables in the single-quoted query are GraphQL's, not the shell's.
+          # shellcheck disable=SC2016
+          gh api graphql -F owner="$OWNER" -F name="$NAME" -f query='
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                defaultBranchRef { name }
+                pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC}) {
+                  nodes {
+                    id number baseRefName headRefOid mergeStateStatus
+                    author { login }
+                    autoMergeRequest { enabledAt }
+                    commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+                  }
+                }
+              }
+            }' > "$RUNNER_TEMP/prs.json"
+
+          # Candidates: Dependabot PRs into the default branch with auto-merge
+          # armed. Unarmed ones (majors, unclassified bumps) are left for a
+          # human, the same line dependabot-automerge.yml draws. A missing
+          # rollup (no checks reported yet) reads as PENDING, not success.
+          jq -r '
+            .data.repository as $r
+            | $r.pullRequests.nodes[]
+            | select(.author.login == "dependabot"
+                     and .baseRefName == $r.defaultBranchRef.name
+                     and .autoMergeRequest != null)
+            | [.number, .id, .headRefOid, .mergeStateStatus,
+               (.commits.nodes[0].commit.statusCheckRollup.state // "PENDING")]
+            | @tsv
+          ' "$RUNNER_TEMP/prs.json" > "$RUNNER_TEMP/candidates"
+
+          if [ ! -s "$RUNNER_TEMP/candidates" ]; then
+            echo "No Dependabot PR with auto-merge armed; nothing to do."
+            exit 0
+          fi
+
+          # In flight: up to date (not BEHIND), not conflicting, and its checks
+          # not failed -- it is waiting on CI or about to merge. Rebasing another
+          # PR now would only make it BEHIND the moment this one lands.
+          # UNKNOWN is GitHub still computing mergeability; counted as in flight
+          # because the run that follows its merge or failure will decide it.
+          while IFS=$'\t' read -r number id head state checks; do
+            case "$state" in
+              BEHIND|DIRTY) ;;
+              *)
+                if [ "$checks" != FAILURE ] && [ "$checks" != ERROR ]; then
+                  echo "Waiting on #$number ($state, checks $checks); not rebasing another."
+                  exit 0
+                fi
+                ;;
+            esac
+          done < "$RUNNER_TEMP/candidates"
+
+          # A BEHIND PR whose head already failed is skipped rather than retried:
+          # being oldest, it would otherwise be picked on every push and starve
+          # every PR behind it. DIRTY is left to Dependabot, which does rebase
+          # on conflicts.
+          while IFS=$'\t' read -r number id head state checks; do
+            if [ "$state" != BEHIND ]; then
+              echo "Skipped #$number ($state, checks $checks)."
+              continue
+            fi
+            if [ "$checks" = FAILURE ] || [ "$checks" = ERROR ]; then
+              echo "Skipped #$number: BEHIND, but its checks failed ($checks) and need a human."
+              continue
+            fi
+
+            # expectedHeadOid makes this a compare-and-swap: if Dependabot
+            # pushed between the read above and now, GitHub refuses instead of
+            # rebasing a head this run never looked at.
+            echo "Rebasing #$number onto the default branch."
+            # shellcheck disable=SC2016
+            gh api graphql -F id="$id" -F head="$head" -f query='
+              mutation($id: ID!, $head: GitObjectID!) {
+                updatePullRequestBranch(input: {pullRequestId: $id, expectedHeadOid: $head, updateMethod: REBASE}) {
+                  pullRequest { number }
+                }
+              }' > /dev/null
+            exit 0
+          done < "$RUNNER_TEMP/candidates"
+
+          echo "No BEHIND Dependabot PR is ready to rebase."
